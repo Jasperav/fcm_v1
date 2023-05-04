@@ -22,6 +22,7 @@ pub mod message;
 mod result;
 /// Web Push-specific component of the message.
 pub mod webpush;
+pub use yup_oauth2;
 
 pub use client::Client;
 pub use result::{Error, Result};
