@@ -81,7 +81,7 @@ impl Client {
             .ok_or_else(|| Error::Config)
     }
 
-    pub async fn send_batch(&self, messages: &[&Message]) -> Result<BatchSendResult> {
+    pub async fn send_batch(&self, messages: &[Message]) -> Result<BatchSendResult> {
         if messages.is_empty() {
             debug_assert!(false);
 
@@ -92,7 +92,7 @@ impl Client {
         }
 
         if messages.len() == 1 {
-            let result = self.send(messages[0]).await?;
+            let result = self.send(&messages[0]).await?;
 
             return Ok(BatchSendResult {
                 all_succeed: result.is_none(),

@@ -77,7 +77,7 @@ mod tests {
         println!(
             "Batch send result: {:#?}",
             client
-                .send_batch(&[&test_message, &test_message])
+                .send_batch(&[test_message.clone(), test_message])
                 .await
                 .unwrap()
         );
