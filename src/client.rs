@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::message::Response;
-use crate::result::SendResult;
+use crate::result::{BatchSendResult, SendResult};
 use crate::{auth::Authenticator, message::Message, Error, Result};
 
 /// FCM HTTP v1 API client
@@ -81,7 +81,15 @@ impl Client {
             .ok_or_else(|| Error::Config)
     }
 
-    pub async fn send_batch(&self, messages: &[&Message]) -> Result<Vec<SendResult>> {
+    pub async fn send_batch(&self, messages: &[&Message]) -> Result<BatchSendResult> {
+        if messages.is_empty() {
+            debug_assert!(false);
+
+            return Ok(BatchSendResult {
+                all_succeed: true,
+                results: vec![],
+            })
+        }
         let mut to_send = "".to_string();
 
         for message in messages {
@@ -111,6 +119,7 @@ accept: application/json
         to_send += "--subrequest_boundary--";
 
         let token = self.token().await?;
+        let mut all_succeed = true;
         let resp = self
             .inner
             .post("https://fcm.googleapis.com/batch")
@@ -142,8 +151,13 @@ accept: application/json
                 current_json += "}";
 
                 let bytes = Bytes::from(current_json);
+                let transformed = self.bytes_to_send_result(bytes);
 
-                result.push(self.bytes_to_send_result(bytes));
+                if transformed != SendResult::Ok {
+                    all_succeed = false;
+                }
+
+                result.push(transformed);
 
                 current_json = "".to_string();
             } else if !current_json.is_empty() {
@@ -152,7 +166,10 @@ accept: application/json
         }
 
         if result.len() == messages.len() {
-            Ok(result)
+            Ok(BatchSendResult {
+                all_succeed,
+                results: result,
+            })
         } else {
             debug_assert!(false, "{text}");
 
