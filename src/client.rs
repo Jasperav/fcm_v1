@@ -89,7 +89,7 @@ impl Client {
                 validate_only: false,
                 message: &message,
             };
-            let json = serde_json::to_string(&wrapped).map_err(|| Error::Deserialization)?;
+            let json = serde_json::to_string(&wrapped).map_err(|_| Error::Deserialization)?;
             let request = format!(
                 r#"
 --subrequest_boundary

@@ -29,7 +29,7 @@ pub use result::{Error, Result};
 #[cfg(test)]
 mod tests {
     use crate::apns::ApnsConfig;
-    use crate::aps::{Alert, Aps};
+    use crate::aps::{Alert, Aps, ApsInner};
     use std::collections::HashMap;
     use std::time::Duration;
 
@@ -54,24 +54,18 @@ mod tests {
         let mut test_message = message::Message::default();
         test_message.token = Some(registration_token);
 
-        let mut hash_map = HashMap::new();
-
-        hash_map.insert(
-            "aps".to_string(),
-            serde_json::to_value(Aps {
-                mutable_content: Some(1),
-                alert: Some(Alert {
-                    title: Some("Test".to_string()),
-                    subtitle: Some("Test".to_string()),
-                    body: Some("Test".to_string()),
-                }),
-            })
-            .unwrap(),
-        );
-
         test_message.apns = Some(ApnsConfig {
             headers: None,
-            payload: Some(hash_map),
+            payload: Some(Aps {
+                aps: Some(ApsInner {
+                    mutable_content: Some(1),
+                    alert: Some(Alert {
+                        title: Some("Test".to_string()),
+                        subtitle: Some("Test".to_string()),
+                        body: Some("Test".to_string()),
+                    }),
+                }),
+            }),
             fcm_options: None,
         });
 
