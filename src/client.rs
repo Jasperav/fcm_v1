@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::message::Response;
-use crate::result::{BatchSendResult, SendResult};
+use crate::result::{BatchSendResult, FcmResponseError};
 use crate::{auth::Authenticator, message::Message, Error, Result};
 
 /// FCM HTTP v1 API client
@@ -153,7 +153,7 @@ accept: application/json
                 let bytes = Bytes::from(current_json);
                 let transformed = self.bytes_to_send_result(bytes);
 
-                if transformed != SendResult::Ok {
+                if transformed.is_some() {
                     all_succeed = false;
                 }
 
@@ -179,7 +179,7 @@ accept: application/json
 
     /// Send a message. Does not implement retry on failure (that is the caller's responsibility).
     /// Requests the `"https://www.googleapis.com/auth/firebase.messaging"` scope.
-    pub async fn send(&self, message: &Message) -> Result<SendResult> {
+    pub async fn send(&self, message: &Message) -> Result<Option<FcmResponseError>> {
         let tok = self.token().await?;
 
         let req = FCMReq {
@@ -205,48 +205,48 @@ accept: application/json
         Ok(self.bytes_to_send_result(bytes))
     }
 
-    fn bytes_to_send_result(&self, bytes: Bytes) -> SendResult {
+    fn bytes_to_send_result(&self, bytes: Bytes) -> Option<FcmResponseError> {
         if let Ok(mut error) = serde_json::from_slice::<FcmError>(&bytes) {
             if error.error.details.len() == 1 {
                 let detail = error.error.details.remove(0);
 
                 match (&detail.error_code, detail.error_type.as_str()) {
                     (Some(error_code), "type.googleapis.com/google.firebase.fcm.v1.FcmError") => {
-                        self.error_message_to_send_result(&error_code)
+                        Some(self.error_message_to_send_result(&error_code))
                     }
-                    (_, _) => SendResult::Other(format!(
+                    (_, _) => Some(FcmResponseError::Other(format!(
                         "Got unknown error code, something is very wrong: {:#?}",
                         detail
-                    )),
+                    ))),
                 }
             } else {
-                SendResult::Other(format!(
+                Some(FcmResponseError::Other(format!(
                     "Detail line is not 1: {}",
                     String::from_utf8_lossy(&bytes).to_string()
-                ))
+                )))
             }
         } else {
             if serde_json::from_slice::<Response>(&bytes).is_ok() {
-                SendResult::Ok
+                None
             } else {
                 let string_result = String::from_utf8_lossy(&bytes).to_string();
 
-                SendResult::Other(string_result)
+                Some(FcmResponseError::Other(string_result))
             }
         }
     }
 
-    fn error_message_to_send_result(&self, error_code: &str) -> SendResult {
+    fn error_message_to_send_result(&self, error_code: &str) -> FcmResponseError {
         match error_code {
-            "UNSPECIFIED_ERROR" => SendResult::UnspecifiedError,
-            "INVALID_ARGUMENT" => SendResult::InvalidArgument,
-            "UNREGISTERED" => SendResult::Unregistered,
-            "SENDER_ID_MISMATCH" => SendResult::SenderIdMismatch,
-            "QUOTA_EXCEEDED" => SendResult::QuotaExceeded,
-            "UNAVAILABLE" => SendResult::Unavailable,
-            "INTERNAL" => SendResult::Internal,
-            "THIRD_PARTY_AUTH_ERROR" => SendResult::ThirdPartyAuthError,
-            _ => SendResult::Other(error_code.to_string()),
+            "UNSPECIFIED_ERROR" => FcmResponseError::UnspecifiedError,
+            "INVALID_ARGUMENT" => FcmResponseError::InvalidArgument,
+            "UNREGISTERED" => FcmResponseError::Unregistered,
+            "SENDER_ID_MISMATCH" => FcmResponseError::SenderIdMismatch,
+            "QUOTA_EXCEEDED" => FcmResponseError::QuotaExceeded,
+            "UNAVAILABLE" => FcmResponseError::Unavailable,
+            "INTERNAL" => FcmResponseError::Internal,
+            "THIRD_PARTY_AUTH_ERROR" => FcmResponseError::ThirdPartyAuthError,
+            _ => FcmResponseError::Other(error_code.to_string()),
         }
     }
 }
