@@ -31,7 +31,6 @@ pub use result::{Error, Result};
 mod tests {
     use crate::apns::ApnsConfig;
     use crate::aps::{Alert, Aps, ApsInner};
-    use std::collections::HashMap;
     use std::time::Duration;
 
     use super::*;
