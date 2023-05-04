@@ -1,6 +1,21 @@
 /// Custom result type for FCM API calls.
 pub type Result<T> = std::result::Result<T, Error>;
 
+// https://firebase.google.com/docs/reference/fcm/rest/v1/ErrorCode
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendResult {
+    Ok,
+    UnspecifiedError,
+    InvalidArgument,
+    Unregistered,
+    SenderIdMismatch,
+    QuotaExceeded,
+    Unavailable,
+    Internal,
+    ThirdPartyAuthError,
+    Other(String),
+}
+
 /// Custom error type for FCM API calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {

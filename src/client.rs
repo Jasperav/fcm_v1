@@ -1,7 +1,11 @@
+use bytes::Bytes;
+use reqwest::header::{HeaderValue, CONTENT_TYPE};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::message::Response;
+use crate::result::SendResult;
 use crate::{auth::Authenticator, message::Message, Error, Result};
 
 /// FCM HTTP v1 API client
@@ -18,6 +22,24 @@ pub struct Client {
 struct FCMReq<'a> {
     validate_only: bool,
     message: &'a Message,
+}
+
+#[derive(Debug, Deserialize)]
+struct FcmError {
+    error: FcmErrorInner,
+}
+
+#[derive(Debug, Deserialize)]
+struct FcmErrorInner {
+    details: Vec<FcmErrorDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FcmErrorDetail {
+    #[serde(rename(deserialize = "errorCode"))]
+    error_code: Option<String>,
+    #[serde(rename(deserialize = "@type"))]
+    error_type: String,
 }
 
 impl Client {
@@ -47,16 +69,101 @@ impl Client {
         self.timeout = timeout;
     }
 
-    /// Send a message. Does not implement retry on failure (that is the caller's responsibility).
-    /// Requests the `"https://www.googleapis.com/auth/firebase.messaging"` scope.
-    pub async fn send(&self, message: &Message) -> Result<Message> {
+    async fn token(&self) -> Result<String> {
         let scopes = &["https://www.googleapis.com/auth/firebase.messaging"];
 
-        let tok = self
-            .authenticator
+        self.authenticator
             .token(scopes)
             .await
-            .map_err(|_| Error::Auth)?;
+            .map_err(|_| Error::Auth)?
+            .token()
+            .map(|t| t.to_string())
+            .ok_or_else(|| Error::Config)
+    }
+
+    pub async fn send_batch(&self, messages: &[&Message]) -> Result<Vec<SendResult>> {
+        let mut to_send = "".to_string();
+
+        for message in messages {
+            let wrapped = FCMReq {
+                validate_only: false,
+                message: &message,
+            };
+            let json = serde_json::to_string(&wrapped).unwrap();
+            let request = format!(
+                r#"
+--subrequest_boundary
+Content-Type: application/http
+Content-Transfer-Encoding: binary
+
+POST /v1/projects/{}/messages:send
+Content-Type: application/json
+accept: application/json
+
+{json}
+"#,
+                self.project_id
+            );
+
+            to_send += &request;
+        }
+
+        to_send += "--subrequest_boundary--";
+
+        let token = self.token().await?;
+        let resp = self
+            .inner
+            .post("https://fcm.googleapis.com/batch")
+            .timeout(self.timeout)
+            .bearer_auth(token)
+            .header(
+                CONTENT_TYPE,
+                HeaderValue::from_static("multipart/mixed; boundary=\"subrequest_boundary\""),
+            )
+            .body(to_send)
+            .send()
+            .await
+            .map_err(|err| Error::FCM(err.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|err| Error::FCM(err.to_string()))?;
+        let mut result = Vec::with_capacity(messages.len());
+        let mut current_json = "".to_string();
+
+        for line in text.lines() {
+            if line == "{" {
+                debug_assert!(current_json.is_empty());
+
+                current_json += "{";
+            } else if line == "}" {
+                debug_assert!(!current_json.is_empty());
+
+                current_json += "}";
+
+                let bytes = Bytes::from(current_json);
+
+                result.push(self.bytes_to_send_result(bytes));
+
+                current_json = "".to_string();
+            } else if !current_json.is_empty() {
+                current_json += line;
+            }
+        }
+
+        if result.len() == messages.len() {
+            Ok(result)
+        } else {
+            debug_assert!(false, "{text}");
+
+            Err(Error::FCM("Mismatch in return values".to_string()))
+        }
+    }
+
+    /// Send a message. Does not implement retry on failure (that is the caller's responsibility).
+    /// Requests the `"https://www.googleapis.com/auth/firebase.messaging"` scope.
+    pub async fn send(&self, message: &Message) -> Result<SendResult> {
+        let tok = self.token().await?;
 
         let req = FCMReq {
             validate_only: self.validate_only,
@@ -70,22 +177,59 @@ impl Client {
                 self.project_id
             ))
             .timeout(self.timeout)
-            .bearer_auth(tok.token().unwrap())
+            .bearer_auth(tok)
             .json(&req)
             .send()
-            .await
-            .map_err(|_| Error::Timeout)?;
+            .await;
 
-        if let Err(e) = resp.error_for_status_ref() {
-            let http_status = e.status().unwrap();
-            return Err(Error::FCM(format!(
-                "error code {} ({}): {}",
-                http_status.as_u16(),
-                http_status.canonical_reason().unwrap(),
-                resp.text().await.map_err(|_| Error::Deserialization)?
-            )));
+        let resp = resp.map_err(|_| Error::Timeout)?;
+        let bytes = resp.bytes().await.map_err(|_| Error::Deserialization)?;
+
+        Ok(self.bytes_to_send_result(bytes))
+    }
+
+    fn bytes_to_send_result(&self, bytes: Bytes) -> SendResult {
+        if let Ok(mut error) = serde_json::from_slice::<FcmError>(&bytes) {
+            if error.error.details.len() == 1 {
+                let detail = error.error.details.remove(0);
+
+                match (&detail.error_code, detail.error_type.as_str()) {
+                    (Some(error_code), "type.googleapis.com/google.firebase.fcm.v1.FcmError") => {
+                        self.error_message_to_send_result(&error_code)
+                    }
+                    (_, _) => SendResult::Other(format!(
+                        "Got unknown error code, something is very wrong: {:#?}",
+                        detail
+                    )),
+                }
+            } else {
+                SendResult::Other(format!(
+                    "Detail line is not 1: {}",
+                    String::from_utf8_lossy(&bytes).to_string()
+                ))
+            }
+        } else {
+            if serde_json::from_slice::<Response>(&bytes).is_ok() {
+                SendResult::Ok
+            } else {
+                let string_result = String::from_utf8_lossy(&bytes).to_string();
+
+                SendResult::Other(string_result)
+            }
         }
+    }
 
-        return resp.json().await.map_err(|_| Error::Deserialization);
+    fn error_message_to_send_result(&self, error_code: &str) -> SendResult {
+        match error_code {
+            "UNSPECIFIED_ERROR" => SendResult::UnspecifiedError,
+            "INVALID_ARGUMENT" => SendResult::InvalidArgument,
+            "UNREGISTERED" => SendResult::Unregistered,
+            "SENDER_ID_MISMATCH" => SendResult::SenderIdMismatch,
+            "QUOTA_EXCEEDED" => SendResult::QuotaExceeded,
+            "UNAVAILABLE" => SendResult::Unavailable,
+            "INTERNAL" => SendResult::Internal,
+            "THIRD_PARTY_AUTH_ERROR" => SendResult::ThirdPartyAuthError,
+            _ => SendResult::Other(error_code.to_string()),
+        }
     }
 }
