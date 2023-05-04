@@ -19,7 +19,7 @@ pub mod auth;
 mod client;
 /// Platform-independent component of the message.
 pub mod message;
-mod result;
+pub mod result;
 /// Web Push-specific component of the message.
 pub mod webpush;
 pub use yup_oauth2;
