@@ -90,6 +90,16 @@ impl Client {
                 results: vec![],
             })
         }
+
+        if messages.len() == 1 {
+            let result = self.send(messages[0]).await?;
+
+            return Ok(BatchSendResult {
+                all_succeed: result.is_none(),
+                results: vec![result],
+            })
+        }
+
         let mut to_send = "".to_string();
 
         for message in messages {
